@@ -1,15 +1,27 @@
 name: Build & Release APK
 
+# APKs go to other people's TVs, so publishing is a release: only a version
+# tag (vX.Y.Z) or a GitHub release publishes, never a push to master. A
+# release made in the GitHub UI can fire both events for one tag; the
+# concurrency group runs them in turn, and the second only re-attaches the
+# same APK.
 on:
   push:
     tags:
       - 'v*'
+  release:
+    types: [published]
 
 permissions:
   contents: write
 
+concurrency:
+  group: apk-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
 
     steps:
@@ -37,8 +49,16 @@ jobs:
           echo "Found APK: $APK"
           cp "$APK" app/build/outputs/apk/jellyfin-tentacle-androidtv-${{ steps.version.outputs.VERSION }}.apk
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: app/build/outputs/apk/jellyfin-tentacle-androidtv-${{ steps.version.outputs.VERSION }}.apk
-          generate_release_notes: true
+      # Lucas's own release (made in the UI) keeps its title and notes: the
+      # APK is only attached. A bare tag gets a release with generated notes.
+      - name: Publish the APK on the tag's release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          APK: app/build/outputs/apk/jellyfin-tentacle-androidtv-${{ steps.version.outputs.VERSION }}.apk
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$APK" --verify-tag --title "$TAG" --generate-notes --repo "$GITHUB_REPOSITORY"
+          fi
